@@ -3,9 +3,9 @@ import random
 import string
 import aiohttp
 import os
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from flask import Flask
 from threading import Thread
 
@@ -23,90 +23,88 @@ API_URL = "https://api.mail.tm"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# --- HELPERS ---
 async def call_api(url, method="GET", data=None, token=None):
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token: headers["Authorization"] = f"Bearer {token}"
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.request(method, f"{API_URL}{url}", json=data, headers=headers, timeout=10) as r:
+            async with session.request(method, f"{API_URL}{url}", json=data, headers=headers, timeout=5) as r:
                 return await r.json()
-        except Exception as e:
-            return {"error": str(e)}
+        except: return None
 
+def get_menu():
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="➕ Generate New / Delete")
+    kb.button(text="🔄 Refresh")
+    kb.adjust(2)
+    return kb.as_markup(resize_keyboard=True)
+
+# --- COMMANDS ---
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="📧 Generate New Email", callback_data="gen"))
-    await m.answer(f"🚀 **Temp Mail Pro**\n\nTap the button below to get a disposable email address instantly.", reply_markup=kb.as_markup(), parse_mode="Markdown")
-
-@dp.callback_query(lambda c: c.data == "gen")
-async def gen(c: types.CallbackQuery):
-    msg = await c.message.edit_text("🔍 **Searching for available domains...**")
-    
-    # 1. Get Domains
-    doms = await call_api("/domains")
-    if "hydra:member" not in doms or not doms['hydra:member']:
-        await msg.edit_text("❌ Error: Could not find mail domains. Try again in a minute.")
-        return
-
-    domain = doms['hydra:member'][0]['domain']
-    user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    addr = f"{user}@{domain}"
-    pwd = "".join(random.choices(string.ascii_letters + string.digits, k=10))
-    
-    await msg.edit_text("✨ **Creating your private inbox...**")
-
-    # 2. Create Account
-    acc = await call_api("/accounts", "POST", {"address": addr, "password": pwd})
-    if "error" in acc or "id" not in acc:
-        await msg.edit_text(f"❌ Account creation failed. Please try again.")
-        return
-
-    # 3. Get Token
-    tk_res = await call_api("/token", "POST", {"address": addr, "password": pwd})
-    token = tk_res.get('token')
-
-    if not token:
-        await msg.edit_text("❌ Login failed. The mail server is busy.")
-        return
-
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="📥 Refresh Inbox", callback_data=f"ref_{token}"))
-    
-    await msg.edit_text(
-        f"✅ **Your Temp Email is Ready!**\n\n"
-        f"📧 `{addr}`\n"
-        f"🔑 `{pwd}`\n\n"
-        f"💡 *Tip:* Tap the email address to copy it. Use it anywhere you need to sign up!",
-        reply_markup=kb.as_markup(), 
+    await m.answer(
+        "👋 **Welcome to Temp Mail Pro**\n\nUse the buttons below to manage your temporary email addresses.",
+        reply_markup=get_menu(),
         parse_mode="Markdown"
     )
 
-@dp.callback_query(lambda c: c.data.startswith("ref_"))
-async def ref(c: types.CallbackQuery):
-    token = c.data.split("_")[1]
-    await c.answer("Checking for new messages...")
+@dp.message(F.text == "➕ Generate New / Delete")
+async def fast_gen(m: types.Message):
+    status_msg = await m.answer("⚡ *Generating...*", parse_mode="Markdown")
     
-    mails = await call_api("/messages", token=token)
-    if "hydra:member" not in mails or not mails['hydra:member']:
-        await c.answer("Inbox is empty. No emails yet! 📬", show_alert=True)
-    else:
-        m = mails['hydra:member'][0]
-        # Get full message content
-        details = await call_api(f"/messages/{m['id']}", token=token)
-        text_content = details.get('text', 'No content')
+    # Fast domain fetch
+    doms = await call_api("/domains")
+    if not doms or 'hydra:member' not in doms:
+        await status_msg.edit_text("❌ Server busy. Try again.")
+        return
+
+    # Pick a random domain from all available ones
+    domain = random.choice(doms['hydra:member'])['domain']
+    user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    addr = f"{user}@{domain}"
+    pwd = "pass" + ''.join(random.choices(string.digits, k=5))
+    
+    # Create and Get Token quickly
+    await call_api("/accounts", "POST", {"address": addr, "password": pwd})
+    tk_res = await call_api("/token", "POST", {"address": addr, "password": pwd})
+    
+    if tk_res and 'token' in tk_res:
+        token = tk_res['token']
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🌐 Open in Browser", url="https://mail.tm/"))
         
-        await c.message.answer(
-            f"📩 **New Message!**\n\n"
-            f"👤 **From:** {m['from']['address']}\n"
-            f"📝 **Subject:** {m['subject']}\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"{text_content[:3000]}", # Show up to 3000 chars
+        await status_msg.delete() # Remove the "Generating" text
+        await m.answer(
+            f"✅ **New temporary email address generated:**\n\n"
+            f"📧 `{addr}`\n\n"
+            f"Your old address (if any) has been replaced.",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+        # Store token in a hidden way (for this session)
+        # In a real bot, you'd use a database, but for speed, we use this:
+        dp["last_token"] = token 
+    else:
+        await status_msg.edit_text("❌ Failed to generate. Try again.")
+
+@dp.message(F.text == "🔄 Refresh")
+async def refresh(m: types.Message):
+    token = dp.get("last_token")
+    if not token:
+        await m.answer("❌ No active email. Click 'Generate' first.")
+        return
+
+    res = await call_api("/messages", token=token)
+    if not res or not res.get('hydra:member'):
+        await m.answer(f"📧 **Current email address:**\nChecking inbox... \n\n**Your inbox is empty**", parse_mode="Markdown")
+    else:
+        msg_data = res['hydra:member'][0]
+        await m.answer(
+            f"📩 **New email message**\n\n"
+            f"**From:** `{msg_data['from']['address']}`\n"
+            f"**Subject:** {msg_data['subject']}\n\n"
+            f"_{msg_data['intro']}_",
             parse_mode="Markdown"
         )
 
