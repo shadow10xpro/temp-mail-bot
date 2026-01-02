@@ -6,11 +6,20 @@ import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from flask import Flask
+from threading import Thread
 
-# --- SETUP ---
-TOKEN = os.getenv("BOT_TOKEN") # We will add this in Render later
+# --- TINY WEB SERVER FOR RENDER ---
+app = Flask('')
+@app.route('/')
+def home(): return "Bot is running!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+
+# --- BOT SETUP ---
+TOKEN = os.getenv("BOT_TOKEN")
 API_URL = "https://api.mail.tm"
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -32,7 +41,7 @@ async def animate(msg, text):
 async def start(m: types.Message):
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="📧 Generate Email", callback_data="gen"))
-    await m.answer(f"✨ **Hello {m.from_user.first_name}!**\nWelcome to the smoothest Temp Mail bot.", reply_markup=kb.as_markup(), parse_mode="Markdown")
+    await m.answer(f"✨ **Hello!**\nWelcome to the smoothest Temp Mail bot.", reply_markup=kb.as_markup(), parse_mode="Markdown")
 
 @dp.callback_query(lambda c: c.data == "gen")
 async def gen(c: types.CallbackQuery):
@@ -48,7 +57,7 @@ async def gen(c: types.CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="🔄 Check Inbox", callback_data=f"ref_{token}"))
-    await msg.edit_text(f"✅ **Ready!**\n\n📧 `{addr}`\n\n_Tap email to copy. Click below to check mail._", reply_markup=kb.as_markup(), parse_mode="Markdown")
+    await msg.edit_text(f"✅ **Ready!**\n\n📧 `{addr}`\n\n_Tap email to copy._", reply_markup=kb.as_markup(), parse_mode="Markdown")
 
 @dp.callback_query(lambda c: c.data.startswith("ref_"))
 async def ref(c: types.CallbackQuery):
@@ -62,6 +71,9 @@ async def ref(c: types.CallbackQuery):
         await c.message.answer(f"📩 **New Mail!**\n\n👤 From: {m['from']['address']}\n📝 Subject: {m['subject']}\n\n{m['intro']}")
 
 async def main():
+    # Start the web server in a separate thread
+    Thread(target=run_web).start()
+    # Start the bot
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
