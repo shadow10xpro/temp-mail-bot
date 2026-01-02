@@ -9,7 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from flask import Flask
 from threading import Thread
 
-# --- WEB SERVER ---
+# --- WEB SERVER FOR RENDER ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is live!"
@@ -17,32 +17,24 @@ def home(): return "Bot is live!"
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
-# --- CONFIG ---
+# --- BOT SETUP ---
 TOKEN = os.getenv("BOT_TOKEN")
-API_URL = "https://api.mail.tm"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Memory to store user data (This keeps it fast)
-USER_STORAGE = {} 
-CACHED_DOMAINS = []
+# Multi-user storage
+USER_DATA = {} 
 
-# --- HELPERS ---
-async def call_api(url, method="GET", data=None, token=None):
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if token: headers["Authorization"] = f"Bearer {token}"
+# Domains available in 1secmail
+DOMAINS = ["1secmail.com", "1secmail.org", "1secmail.net", "kzbat.com", "vjuum.com", "vps93.com", "firemail.cc", "testmail.help"]
+
+# --- API HELPER ---
+async def fetch_json(url):
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.request(method, f"{API_URL}{url}", json=data, headers=headers, timeout=15) as r:
-                if r.status > 400: return None
+            async with session.get(url, timeout=10) as r:
                 return await r.json()
         except: return None
-
-async def get_domains():
-    global CACHED_DOMAINS
-    res = await call_api("/domains")
-    if res and 'hydra:member' in res:
-        CACHED_DOMAINS = [d['domain'] for d in res['hydra:member']]
 
 def main_menu():
     kb = ReplyKeyboardBuilder()
@@ -51,94 +43,81 @@ def main_menu():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-# --- LOGIC ---
+# --- COMMANDS ---
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("👋 **Welcome!**\n\nUse the buttons below to generate a new email or check your inbox.", reply_markup=main_menu(), parse_mode="Markdown")
+    await m.answer(
+        "👋 **Welcome to Temp Mail Pro**\n\n"
+        "Use the buttons below to manage your temporary email addresses.",
+        reply_markup=main_menu(),
+        parse_mode="Markdown"
+    )
 
 @dp.message(F.text == "➕ Generate New / Delete")
 async def generate(m: types.Message):
-    # Ensure we have domains
-    if not CACHED_DOMAINS:
-        await get_domains()
-    
-    if not CACHED_DOMAINS:
-        await m.answer("❌ Mail server is currently slow. Please try again in 5 seconds.")
-        return
-
-    # 1. Prepare Details
-    domain = random.choice(CACHED_DOMAINS)
+    # 1. Fast Random Address Generation
     user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    addr = f"{user}@{domain}"
-    pwd = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
-
-    # 2. Create Account
-    acc = await call_api("/accounts", "POST", {"address": addr, "password": pwd})
-    if not acc:
-        # Retry once with different username if server rejected
-        user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-        addr = f"{user}@{domain}"
-        acc = await call_api("/accounts", "POST", {"address": addr, "password": pwd})
-
-    # 3. Get Token
-    tk_res = await call_api("/token", "POST", {"address": addr, "password": pwd})
+    domain = random.choice(DOMAINS)
+    email = f"{user}@{domain}"
     
-    if tk_res and 'token' in tk_res:
-        token = tk_res['token']
-        # Save to memory
-        USER_STORAGE[m.from_user.id] = {"address": addr, "token": token}
-        
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://mail.tm/"))
-        
-        await m.answer(
-            f"Your old email address has been successfully deleted\n\n"
-            f"New temporary email address generated:\n\n"
-            f"**{addr}**",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
-    else:
-        await m.answer("❌ Server busy. Please tap 'Generate' again.")
+    # 2. Save for the user
+    USER_DATA[m.from_user.id] = {"email": email, "user": user, "domain": domain}
+    
+    # 3. UI exactly like the screenshot
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://www.1secmail.com/"))
+    
+    await m.answer(
+        f"Your old email address has been successfully deleted\n\n"
+        f"New temporary email address generated:\n\n"
+        f"**{email}**",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
 
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
     user_id = m.from_user.id
-    if user_id not in USER_STORAGE:
-        await m.answer("❌ No active email found. Click 'Generate' first.")
+    if user_id not in USER_DATA:
+        await m.answer("❌ No active email. Click 'Generate' first.")
         return
 
-    data = USER_STORAGE[user_id]
-    res = await call_api("/messages", token=data['token'])
+    data = USER_DATA[user_id]
+    api_url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={data['user']}&domain={data['domain']}"
     
-    if not res or 'hydra:member' not in res or not res['hydra:member']:
+    messages = await fetch_json(api_url)
+    
+    if not messages:
+        # Show empty inbox UI
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://mail.tm/"))
+        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://www.1secmail.com/"))
         await m.answer(
-            f"Current email address:\n**{data['address']}**\n\n"
+            f"Current email address: **{data['email']}**\n\n"
             f"Your inbox is empty",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
     else:
-        # Show the most recent email
-        msg = res['hydra:member'][0]
-        full_msg = await call_api(f"/messages/{msg['id']}", token=data['token'])
-        content = full_msg.get('text', 'No content')
+        # Show the latest email
+        latest = messages[0]
+        # Fetch full message body
+        msg_id = latest['id']
+        body_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={data['user']}&domain={data['domain']}&id={msg_id}"
+        full_msg = await fetch_json(body_url)
         
+        content = full_msg.get('textBody', 'No content')
         await m.answer(
             f"📩 **New email message**\n\n"
-            f"**From:** {msg['from']['address']}\n"
-            f"**Subject:** {msg['subject']}\n"
+            f"**From:** `{latest['from']}`\n"
+            f"**Subject:** {latest['subject']}\n"
+            f"**Date:** {latest['date']}\n"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"{content[:3500]}",
+            f"{content[:3000]}",
             parse_mode="Markdown"
         )
 
 async def main():
     Thread(target=run_web).start()
-    # Pre-fetch domains on start to save time later
-    await get_domains()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
