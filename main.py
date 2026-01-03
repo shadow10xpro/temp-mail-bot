@@ -6,10 +6,11 @@ import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.types import WebAppInfo
 from flask import Flask
 from threading import Thread
 
-# --- WEB SERVER FOR RENDER ---
+# --- WEB SERVER ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is live!"
@@ -22,10 +23,8 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Multi-user storage
 USER_DATA = {} 
 
-# --- API HELPER ---
 async def call_api(url, method="GET", data=None, token=None):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token: headers["Authorization"] = f"Bearer {token}"
@@ -47,41 +46,45 @@ def main_menu():
 async def start(m: types.Message):
     await m.answer(
         "👋 **Welcome to Temp Mail Pro**\n\n"
-        "Use the buttons below to manage your temporary email addresses.",
+        "I provide fast, disposable emails with a smooth interface.",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
 @dp.message(F.text == "➕ Generate New / Delete")
 async def generate(m: types.Message):
-    # Use a common stable domain to make it INSTANT
+    # Using a high-speed stable domain
     domain = "fexpost.com" 
     user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
     email = f"{user}@{domain}"
-    password = "password123"
+    password = "password123" # Simple internal password
     
-    # 1. Create account (Fast)
+    # 1. Create account
     await call_api("/accounts", "POST", {"address": email, "password": password})
     
-    # 2. Get Token
+    # 2. Get Token (This is the 'Magic' from your screenshot)
     tk = await call_api("/token", "POST", {"address": email, "password": password})
     
     if tk and 'token' in tk:
         USER_DATA[m.from_user.id] = {"email": email, "token": tk['token']}
         
         builder = InlineKeyboardBuilder()
-        # This link is beautiful and works on all phones
-        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url="https://mail.tm/en/"))
+        # --- THE SMOOTH PART ---
+        # Instead of a link, we open the Web App inside Telegram!
+        builder.row(types.InlineKeyboardButton(
+            text="📥 Open Inbox (Smooth)", 
+            web_app=WebAppInfo(url="https://mail.tm/en/")
+        ))
         
         await m.answer(
-            f"Your old email address has been successfully deleted\n\n"
-            f"New temporary email address generated:\n\n"
-            f"**{email}**",
+            f"✅ **New email address generated:**\n\n"
+            f"📧 `{email}`\n\n"
+            f"Your old address has been deleted. Tap the email to copy it, then click below to see your messages.",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
     else:
-        await m.answer("❌ Server is tight. Please try again in a moment.")
+        await m.answer("❌ Connection is slow. Please try again.")
 
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
@@ -93,28 +96,28 @@ async def refresh(m: types.Message):
     data = USER_DATA[user_id]
     messages = await call_api("/messages", token=data['token'])
     
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="📥 Open Full Inbox", web_app=WebAppInfo(url="https://mail.tm/en/")))
+
     if not messages or not messages.get('hydra:member'):
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url="https://mail.tm/en/"))
         await m.answer(
-            f"Current email address: **{data['email']}**\n\n"
-            f"Your inbox is empty",
+            f"📧 **Address:** `{data['email']}`\n\n"
+            f"Your inbox is empty 📭",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
     else:
-        # Get the latest message
         msg_item = messages['hydra:member'][0]
-        # Get full content
         detail = await call_api(f"/messages/{msg_item['id']}", token=data['token'])
-        
         body = detail.get('text', 'No text content')
+        
         await m.answer(
-            f"📩 **New email message**\n\n"
-            f"**From:** `{msg_item['from']['address']}`\n"
-            f"**Subject:** {msg_item['subject']}\n"
+            f"📩 **New Message!**\n\n"
+            f"👤 **From:** `{msg_item['from']['address']}`\n"
+            f"📝 **Subject:** {msg_item['subject']}\n"
             f"━━━━━━━━━━━━━━━\n\n"
             f"{body[:3000]}",
+            reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
 
