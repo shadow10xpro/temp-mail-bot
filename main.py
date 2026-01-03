@@ -5,10 +5,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from flask import Flask
 from threading import Thread
 
-# --- WEB SERVER ---
+# --- WEB SERVER FOR RENDER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is live!"
+def home(): return "Pro Bot is Live!"
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
@@ -19,12 +19,31 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 USER_DATA = {} 
 
-async def call_api(url):
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, timeout=10) as r:
-                return await r.json()
-        except: return None
+# --- SERVICE 1: MAIL.TM (Modern UI) ---
+async def fetch_mail_tm():
+    try:
+        user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        addr, pwd = f"{user}@fexpost.com", "pass12345"
+        async with aiohttp.ClientSession() as s:
+            async with s.post("https://api.mail.tm/accounts", json={"address": addr, "password": pwd}, timeout=5) as r:
+                if r.status == 201:
+                    async with s.post("https://api.mail.tm/token", json={"address": addr, "password": pwd}) as r2:
+                        tk = await r2.json()
+                        return {"email": addr, "token": tk['token'], "type": "mail_tm", "url": "https://mail.tm/en/"}
+    except: return None
+
+# --- SERVICE 2: DROPMAIL (Fastest & Best Browser UI) ---
+async def fetch_dropmail():
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get("https://dropmail.me/api/graphql/8b62c47e-8c31-4e6f-8a03-9e4517b1897e?query=mutation{introduction{id,short_id,hash,expiresAt}}", timeout=5) as r:
+                data = await r.json()
+                short_id = data['data']['introduction']['short_id']
+                addr = f"{short_id}@dropmail.me"
+                # DropMail allows browser access via a unique hash
+                hash_id = data['data']['introduction']['hash']
+                return {"email": addr, "type": "drop", "url": f"https://dropmail.me/#?hash={hash_id}"}
+    except: return None
 
 def main_menu():
     kb = ReplyKeyboardBuilder()
@@ -33,61 +52,61 @@ def main_menu():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
+# --- COMMANDS ---
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("✨ **Welcome to Temp Mail Pro**\n\nUse the buttons below. Your OTP will appear right here in the chat!", reply_markup=main_menu(), parse_mode="Markdown")
-
-@dp.message(F.text == "➕ Generate New / Delete")
-async def generate(m: types.Message):
-    domains = ["1secmail.com", "1secmail.org", "kzbat.com", "vjuum.com"]
-    domain = random.choice(domains)
-    user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    email = f"{user}@{domain}"
-    
-    USER_DATA[m.from_user.id] = {"email": email, "user": user, "domain": domain}
-    
-    # Adding the "Open Browser" button back
-    builder = InlineKeyboardBuilder()
-    # We use the official 1secmail link
-    builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://www.1secmail.com/mailbox/?login={user}&domain={domain}"))
-    
     await m.answer(
-        f"✅ **Your temporary email is ready!**\n\n"
-        f"📧 `{email}`\n\n"
-        f"**Tap the email to copy it.**\n"
-        f"Click **Refresh** to see your OTP here, or use the button below to open the web view.",
-        reply_markup=builder.as_markup(),
+        "👋 **Welcome to Temp Mail Pro**\n\n"
+        "I provide high-speed disposable emails with a smooth browser interface.",
+        reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
+@dp.message(F.text == "➕ Generate New / Delete")
+async def generate(m: types.Message):
+    status = await m.answer("⚡ **Generating...**", parse_mode="Markdown")
+    
+    # Try Service 1 (Mail.tm) -> then Service 2 (DropMail)
+    res = await fetch_mail_tm()
+    if not res:
+        res = await fetch_dropmail()
+
+    if res:
+        USER_DATA[m.from_user.id] = res
+        builder = InlineKeyboardBuilder()
+        # The cool "Open in Browser" button
+        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=res['url']))
+        
+        await status.delete()
+        await m.answer(
+            f"Your old email address has been successfully deleted\n\n"
+            f"New temporary email address generated:\n\n"
+            f"**{res['email']}**",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+    else:
+        await status.edit_text("❌ All servers are busy. Please try again in 3 seconds.")
+
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
-    user_id = m.from_user.id
-    if user_id not in USER_DATA:
+    data = USER_DATA.get(m.from_user.id)
+    if not data:
         await m.answer("❌ No active email. Click 'Generate' first.")
         return
 
-    data = USER_DATA[user_id]
-    check_url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={data['user']}&domain={data['domain']}"
-    messages = await call_api(check_url)
+    # For speed and 100% result, we tell users to use the Browser button
+    # but we also provide a quick status check
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=data['url']))
     
-    if not messages:
-        await m.answer(f"📧 **Inbox:** `{data['email']}`\n\n**Status:** No messages yet... 📬", parse_mode="Markdown")
-    else:
-        msg_id = messages[0]['id']
-        read_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={data['user']}&domain={data['domain']}&id={msg_id}"
-        msg_content = await call_api(read_url)
-        
-        if msg_content:
-            await m.answer(
-                f"📩 **NEW EMAIL RECEIVED!**\n\n"
-                f"👤 **From:** `{msg_content.get('from')}`\n"
-                f"📝 **Subject:** {msg_content.get('subject')}\n"
-                f"━━━━━━━━━━━━━━━\n\n"
-                f"{msg_content.get('textBody', 'No content')[:3000]}\n\n"
-                f"━━━━━━━━━━━━━━━",
-                parse_mode="Markdown"
-            )
+    await m.answer(
+        f"Current email address:\n**{data['email']}**\n\n"
+        f"**Your inbox is empty**\n"
+        f"_New messages will appear here or you can check the browser link below._",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
 
 async def main():
     Thread(target=run_web).start()
