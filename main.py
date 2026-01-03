@@ -25,14 +25,13 @@ dp = Dispatcher()
 # Multi-user storage
 USER_DATA = {} 
 
-# Domains available in 1secmail
-DOMAINS = ["1secmail.com", "1secmail.org", "1secmail.net", "kzbat.com", "vjuum.com", "vps93.com", "firemail.cc", "testmail.help"]
-
 # --- API HELPER ---
-async def fetch_json(url):
+async def call_api(url, method="GET", data=None, token=None):
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token: headers["Authorization"] = f"Bearer {token}"
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(url, timeout=10) as r:
+            async with session.request(method, f"https://api.mail.tm{url}", json=data, headers=headers, timeout=10) as r:
                 return await r.json()
         except: return None
 
@@ -55,25 +54,34 @@ async def start(m: types.Message):
 
 @dp.message(F.text == "➕ Generate New / Delete")
 async def generate(m: types.Message):
-    # 1. Fast Random Address Generation
-    user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    domain = random.choice(DOMAINS)
+    # Use a common stable domain to make it INSTANT
+    domain = "fexpost.com" 
+    user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
     email = f"{user}@{domain}"
+    password = "password123"
     
-    # 2. Save for the user
-    USER_DATA[m.from_user.id] = {"email": email, "user": user, "domain": domain}
+    # 1. Create account (Fast)
+    await call_api("/accounts", "POST", {"address": email, "password": password})
     
-    # 3. UI exactly like the screenshot
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://www.1secmail.com/"))
+    # 2. Get Token
+    tk = await call_api("/token", "POST", {"address": email, "password": password})
     
-    await m.answer(
-        f"Your old email address has been successfully deleted\n\n"
-        f"New temporary email address generated:\n\n"
-        f"**{email}**",
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
-    )
+    if tk and 'token' in tk:
+        USER_DATA[m.from_user.id] = {"email": email, "token": tk['token']}
+        
+        builder = InlineKeyboardBuilder()
+        # This link is beautiful and works on all phones
+        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url="https://mail.tm/en/"))
+        
+        await m.answer(
+            f"Your old email address has been successfully deleted\n\n"
+            f"New temporary email address generated:\n\n"
+            f"**{email}**",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+    else:
+        await m.answer("❌ Server is tight. Please try again in a moment.")
 
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
@@ -83,14 +91,11 @@ async def refresh(m: types.Message):
         return
 
     data = USER_DATA[user_id]
-    api_url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={data['user']}&domain={data['domain']}"
+    messages = await call_api("/messages", token=data['token'])
     
-    messages = await fetch_json(api_url)
-    
-    if not messages:
-        # Show empty inbox UI
+    if not messages or not messages.get('hydra:member'):
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=f"https://www.1secmail.com/"))
+        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url="https://mail.tm/en/"))
         await m.answer(
             f"Current email address: **{data['email']}**\n\n"
             f"Your inbox is empty",
@@ -98,21 +103,18 @@ async def refresh(m: types.Message):
             parse_mode="Markdown"
         )
     else:
-        # Show the latest email
-        latest = messages[0]
-        # Fetch full message body
-        msg_id = latest['id']
-        body_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={data['user']}&domain={data['domain']}&id={msg_id}"
-        full_msg = await fetch_json(body_url)
+        # Get the latest message
+        msg_item = messages['hydra:member'][0]
+        # Get full content
+        detail = await call_api(f"/messages/{msg_item['id']}", token=data['token'])
         
-        content = full_msg.get('textBody', 'No content')
+        body = detail.get('text', 'No text content')
         await m.answer(
             f"📩 **New email message**\n\n"
-            f"**From:** `{latest['from']}`\n"
-            f"**Subject:** {latest['subject']}\n"
-            f"**Date:** {latest['date']}\n"
+            f"**From:** `{msg_item['from']['address']}`\n"
+            f"**Subject:** {msg_item['subject']}\n"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"{content[:3000]}",
+            f"{body[:3000]}",
             parse_mode="Markdown"
         )
 
