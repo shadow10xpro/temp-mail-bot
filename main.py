@@ -1,8 +1,4 @@
-import asyncio
-import random
-import string
-import aiohttp
-import os
+import asyncio, random, string, aiohttp, os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -13,27 +9,43 @@ from threading import Thread
 # --- WEB SERVER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is live!"
+def home(): return "Hybrid Bot is Live!"
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
 
-# --- BOT SETUP ---
+# --- CONFIG ---
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
 USER_DATA = {} 
 
-async def call_api(url, method="GET", data=None, token=None):
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if token: headers["Authorization"] = f"Bearer {token}"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.request(method, f"https://api.mail.tm{url}", json=data, headers=headers, timeout=10) as r:
-                return await r.json()
-        except: return None
+# --- API HANDLERS ---
+async def try_mail_tm():
+    """Service 1: Mail.tm (Best Quality)"""
+    try:
+        domain = "fexpost.com"
+        user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        email, pwd = f"{user}@{domain}", "pass12345"
+        async with aiohttp.ClientSession() as s:
+            async with s.post("https://api.mail.tm/accounts", json={"address": email, "password": pwd}, timeout=3) as r1:
+                if r1.status == 201:
+                    async with s.post("https://api.mail.tm/token", json={"address": email, "password": pwd}) as r2:
+                        res = await r2.json()
+                        return {"email": email, "token": res['token'], "type": "mail.tm", "url": "https://mail.tm/en/"}
+    except: return None
 
+async def try_1secmail():
+    """Service 2: 1secmail (Highest Speed)"""
+    try:
+        domains = ["1secmail.com", "1secmail.org", "kzbat.com"]
+        domain = random.choice(domains)
+        user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        email = f"{user}@{domain}"
+        return {"email": email, "user": user, "domain": domain, "type": "1sec", "url": "https://www.1secmail.com/"}
+    except: return None
+
+# --- UI COMPONENTS ---
 def main_menu():
     kb = ReplyKeyboardBuilder()
     kb.button(text="➕ Generate New / Delete")
@@ -41,85 +53,66 @@ def main_menu():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-# --- COMMANDS ---
+# --- BOT LOGIC ---
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer(
-        "👋 **Welcome to Temp Mail Pro**\n\n"
-        "I provide fast, disposable emails with a smooth interface.",
-        reply_markup=main_menu(),
-        parse_mode="Markdown"
-    )
+    await m.answer("🚀 **Welcome to Temp Mail Pro (Hybrid)**\n\nI use multiple servers to ensure you always get an email instantly.", reply_markup=main_menu(), parse_mode="Markdown")
 
 @dp.message(F.text == "➕ Generate New / Delete")
 async def generate(m: types.Message):
-    # Using a high-speed stable domain
-    domain = "fexpost.com" 
-    user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    email = f"{user}@{domain}"
-    password = "password123" # Simple internal password
+    # Fallover System: Try Mail.tm first, then 1secmail
+    res = await try_mail_tm()
+    if not res:
+        res = await try_1secmail()
     
-    # 1. Create account
-    await call_api("/accounts", "POST", {"address": email, "password": password})
-    
-    # 2. Get Token (This is the 'Magic' from your screenshot)
-    tk = await call_api("/token", "POST", {"address": email, "password": password})
-    
-    if tk and 'token' in tk:
-        USER_DATA[m.from_user.id] = {"email": email, "token": tk['token']}
-        
+    if res:
+        USER_DATA[m.from_user.id] = res
         builder = InlineKeyboardBuilder()
-        # --- THE SMOOTH PART ---
-        # Instead of a link, we open the Web App inside Telegram!
-        builder.row(types.InlineKeyboardButton(
-            text="📥 Open Inbox (Smooth)", 
-            web_app=WebAppInfo(url="https://mail.tm/en/")
-        ))
+        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", web_app=WebAppInfo(url=res['url'])))
         
         await m.answer(
-            f"✅ **New email address generated:**\n\n"
-            f"📧 `{email}`\n\n"
-            f"Your old address has been deleted. Tap the email to copy it, then click below to see your messages.",
+            f"✅ **Temp Email Generated Successfully**\n\n"
+            f"📧 `{res['email']}`\n\n"
+            f"_Tap to copy. All messages appear below._",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
     else:
-        await m.answer("❌ Connection is slow. Please try again.")
+        await m.answer("❌ All mail servers are currently busy. Try again in 10 seconds.")
 
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
-    user_id = m.from_user.id
-    if user_id not in USER_DATA:
-        await m.answer("❌ No active email. Click 'Generate' first.")
+    data = USER_DATA.get(m.from_user.id)
+    if not data:
+        await m.answer("❌ Please generate an email first.")
         return
 
-    data = USER_DATA[user_id]
-    messages = await call_api("/messages", token=data['token'])
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📥 Open Full Inbox", web_app=WebAppInfo(url="https://mail.tm/en/")))
-
-    if not messages or not messages.get('hydra:member'):
-        await m.answer(
-            f"📧 **Address:** `{data['email']}`\n\n"
-            f"Your inbox is empty 📭",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
-    else:
-        msg_item = messages['hydra:member'][0]
-        detail = await call_api(f"/messages/{msg_item['id']}", token=data['token'])
-        body = detail.get('text', 'No text content')
+    # Logic based on which provider the user has
+    async with aiohttp.ClientSession() as s:
+        if data['type'] == "mail.tm":
+            headers = {"Authorization": f"Bearer {data['token']}"}
+            async with s.get("https://api.mail.tm/messages", headers=headers) as r:
+                msgs = await r.json()
+                if not msgs.get('hydra:member'):
+                    await m.answer(f"📧 `{data['email']}`\n\n**Inbox is empty**", parse_mode="Markdown")
+                else:
+                    m_id = msgs['hydra:member'][0]['id']
+                    async with s.get(f"https://api.mail.tm/messages/{m_id}", headers=headers) as r2:
+                        det = await r2.json()
+                        await m.answer(f"📩 **New Mail**\n\n**From:** {det['from']['address']}\n**Subject:** {det['subject']}\n\n{det['text'][:3000]}", parse_mode="Markdown")
         
-        await m.answer(
-            f"📩 **New Message!**\n\n"
-            f"👤 **From:** `{msg_item['from']['address']}`\n"
-            f"📝 **Subject:** {msg_item['subject']}\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"{body[:3000]}",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+        elif data['type'] == "1sec":
+            url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={data['user']}&domain={data['domain']}"
+            async with s.get(url) as r:
+                msgs = await r.json()
+                if not msgs:
+                    await m.answer(f"📧 `{data['email']}`\n\n**Inbox is empty**", parse_mode="Markdown")
+                else:
+                    m_id = msgs[0]['id']
+                    url2 = f"https://www.1secmail.com/api/v1/?action=readMessage&login={data['user']}&domain={data['domain']}&id={m_id}"
+                    async with s.get(url2) as r2:
+                        det = await r2.json()
+                        await m.answer(f"📩 **New Mail**\n\n**From:** {det['from']}\n**Subject:** {det['subject']}\n\n{det['textBody'][:3000]}", parse_mode="Markdown")
 
 async def main():
     Thread(target=run_web).start()
