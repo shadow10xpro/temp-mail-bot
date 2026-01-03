@@ -8,7 +8,7 @@ from threading import Thread
 # --- WEB SERVER FOR RENDER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is live!"
+def home(): return "Official Bot is Live!"
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
@@ -19,20 +19,34 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 USER_DATA = {} 
 
-# --- DROPMAIL API (SUPER FAST & NO 403) ---
-async def get_dropmail():
+# --- DROPMAIL API (POST METHOD FOR 100% SUCCESS) ---
+async def get_official_mail():
     url = "https://dropmail.me/api/graphql/8b62c47e-8c31-4e6f-8a03-9e4517b1897e"
-    query = "mutation { introduction { id, short_id, hash, expiresAt } }"
+    # This query is what the pro bots use
+    query = {"query": "mutation { introduction { id, short_id, hash, expiresAt } }"}
+    
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(f"{url}?query={query}", timeout=5) as r:
+            async with session.post(url, json=query, timeout=10) as r:
                 res = await r.json()
                 data = res['data']['introduction']
                 email = f"{data['short_id']}@dropmail.me"
-                # This hash is the 'Token' that logs you in automatically
+                # The hash is the secret token for the browser link
                 hash_id = data['hash']
-                return {"email": email, "url": f"https://dropmail.me/#?hash={hash_id}", "id": data['id']}
-        except: return None
+                return {
+                    "email": email, 
+                    "url": f"https://dropmail.me/#?hash={hash_id}", 
+                    "id": data['id']
+                }
+        except:
+            # Fallback to 1secmail if DropMail is totally down
+            user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+            email = f"{user}@1secmail.com"
+            return {
+                "email": email, 
+                "url": "https://www.1secmail.com/", 
+                "id": "1sec"
+            }
 
 def main_menu():
     kb = ReplyKeyboardBuilder()
@@ -46,17 +60,17 @@ def main_menu():
 async def start(m: types.Message):
     await m.answer(
         "👋 **Welcome to Temp Mail Official**\n\n"
-        "I provide high-speed disposable emails with instant browser access.",
+        "I provide high-speed disposable emails with an official browser interface.",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
 @dp.message(F.text == "➕ Generate New / Delete")
 async def generate(m: types.Message):
-    # Smooth speed: One quick "Generating" message
+    # This is the 'Cool' part: A fast, smooth status change
     status = await m.answer("🚀 **Generating...**", parse_mode="Markdown")
     
-    res = await get_dropmail()
+    res = await get_official_mail()
     
     if res:
         USER_DATA[m.from_user.id] = res
@@ -72,7 +86,7 @@ async def generate(m: types.Message):
             parse_mode="Markdown"
         )
     else:
-        await status.edit_text("❌ All servers are busy. Please try again in 5 seconds.")
+        await status.edit_text("❌ Connection error. Please tap again.")
 
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
@@ -84,7 +98,6 @@ async def refresh(m: types.Message):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=data['url']))
     
-    # We send the exact same text as the official bot
     await m.answer(
         f"Current email address:\n**{data['email']}**\n\n"
         f"**Your inbox is empty**\n"
