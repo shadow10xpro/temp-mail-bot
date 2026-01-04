@@ -5,10 +5,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from flask import Flask
 from threading import Thread
 
-# --- HEARTBEAT FOR RENDER ---
+# --- RENDER KEEP-ALIVE ---
 app = Flask('')
 @app.route('/')
-def home(): return "Ultra-Fast Bot is Live"
+def home(): return "TempMail Pro 2026 - Online"
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
@@ -17,27 +17,69 @@ def run_web():
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-USER_DATA = {} # Stores user session info
+USER_DATA = {} 
 
-# Professional Headers
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-    "Content-Type": "application/json"
-}
+# Professional Header Spoofing
+def get_headers():
+    return {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UD1A.230805.019) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        ]),
+        "Accept": "application/json"
+    }
 
-# --- API CORE (DROPMAIL) ---
-async def call_api(query):
+# --- PROVIDER 1: DROPMAIL (Official Token Link) ---
+async def try_dropmail():
     url = "https://dropmail.me/api/graphql/8b62c47e-8c31-4e6f-8a03-9e4517b1897e"
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        for _ in range(3): # Auto-retry 3 times for speed
-            try:
-                async with session.post(url, json={"query": query}, timeout=10) as r:
-                    if r.status == 200:
-                        return await r.json()
-            except:
-                await asyncio.sleep(0.5)
-    return None
+    query = {"query": "mutation { introduction { id, short_id, hash } }"}
+    async with aiohttp.ClientSession(headers=get_headers()) as s:
+        try:
+            async with s.post(url, json=query, timeout=8) as r:
+                if r.status == 200:
+                    data = (await r.json())['data']['introduction']
+                    return {
+                        "email": f"{data['short_id']}@dropmail.me",
+                        "id": data['id'],
+                        "url": f"https://dropmail.me/#?hash={data['hash']}",
+                        "type": "dropmail"
+                    }
+        except: return None
 
+# --- PROVIDER 2: MAIL.TM (backup with account) ---
+async def try_mail_tm():
+    try:
+        user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        email, pwd = f"{user}@fexpost.com", "pass123456"
+        async with aiohttp.ClientSession(headers=get_headers()) as s:
+            async with s.post("https://api.mail.tm/accounts", json={"address": email, "password": pwd}, timeout=8) as r1:
+                if r1.status == 201:
+                    async with s.post("https://api.mail.tm/token", json={"address": email, "password": pwd}) as r2:
+                        res = await r2.json()
+                        return {
+                            "email": email,
+                            "token": res['token'],
+                            "url": "https://mail.tm/en/",
+                            "type": "mail_tm"
+                        }
+    except: return None
+
+# --- PROVIDER 3: 1SECMAIL (No-Registration Instant) ---
+async def try_1secmail():
+    try:
+        user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
+        domain = random.choice(["1secmail.com", "1secmail.org", "kzbat.com"])
+        return {
+            "email": f"{user}@{domain}",
+            "user": user,
+            "domain": domain,
+            "url": f"https://www.1secmail.com/mailbox/?login={user}&domain={domain}",
+            "type": "1sec"
+        }
+    except: return None
+
+# --- UI MENU ---
 def main_menu():
     kb = ReplyKeyboardBuilder()
     kb.button(text="➕ Generate New / Delete")
@@ -45,80 +87,75 @@ def main_menu():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-# --- BOT HANDLERS ---
+# --- BOT LOGIC ---
 @dp.message(Command("start"))
-async def cmd_start(m: types.Message):
-    await m.answer(
-        "✨ **Welcome to Temp Mail Official**\n\n"
-        "OTPs and Messages will arrive directly in this chat. Use the menu below to start.",
-        reply_markup=main_menu(),
-        parse_mode="Markdown"
-    )
+async def start(m: types.Message):
+    await m.answer("🚀 **TempMail Pro Official v2026**\n\nI use a triple-server system to ensure 100% availability. Generate an email now!", reply_markup=main_menu(), parse_mode="Markdown")
 
 @dp.message(F.text == "➕ Generate New / Delete")
-async def cmd_gen(m: types.Message):
-    status = await m.answer("🚀 **Generating official email...**")
+async def generate(m: types.Message):
+    status = await m.answer("🚀 **Searching for an active server...**")
     
-    query = "mutation { introduction { id, short_id, hash } }"
-    res = await call_api(query)
-    
-    if res and 'data' in res:
-        data = res['data']['introduction']
-        email = f"{data['short_id']}@dropmail.me"
-        # The Hash Link for the official browser look
-        link = f"https://dropmail.me/#?hash={data['hash']}"
-        
-        USER_DATA[m.from_user.id] = {"id": data['id'], "email": email, "url": link}
-        
+    # Failover Logic: Try DropMail -> Mail.tm -> 1secmail
+    res = await try_dropmail()
+    if not res:
+        await status.edit_text("⚡ **Server 1 Busy... Switching to Server 2...**")
+        res = await try_mail_tm()
+    if not res:
+        await status.edit_text("⚡ **Server 2 Busy... Switching to Server 3...**")
+        res = await try_1secmail()
+
+    if res:
+        USER_DATA[m.from_user.id] = res
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=link))
+        builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=res['url']))
         
         await status.delete()
         await m.answer(
-            f"Your old email address has been successfully deleted\n\n"
-            f"New temporary email address generated:\n\n"
-            f"📧 `{email}`",
+            f"✅ **Temp Email Ready!**\n\n"
+            f"📧 `{res['email']}`\n\n"
+            f"Tap to copy. OTPs will appear directly in this chat or via the browser link below.",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
     else:
-        await status.edit_text("❌ Server busy. Please try again in a few seconds.")
+        await status.edit_text("❌ All global servers are under heavy load. Please try again in 10 seconds.")
 
 @dp.message(F.text == "🔄 Refresh")
-async def cmd_refresh(m: types.Message):
+async def refresh(m: types.Message):
     data = USER_DATA.get(m.from_user.id)
     if not data:
-        await m.answer("❌ No active email. Click 'Generate' first.")
+        await m.answer("❌ Please generate an email first.")
         return
 
-    # GraphQL query to get the mail content directly
-    query = f"query {{ session(id: \"{data['id']}\") {{ mails {{ fromAddr, subject, text, decode_status }} }} }}"
-    res = await call_api(query)
-    
+    # Direct Message Fetching
+    async with aiohttp.ClientSession(headers=get_headers()) as s:
+        mails = []
+        try:
+            if data['type'] == "dropmail":
+                query = {"query": f"query {{ session(id: \"{data['id']}\") {{ mails {{ fromAddr, subject, text }} }} }}"}
+                async with s.post("https://dropmail.me/api/graphql/8b62c47e-8c31-4e6f-8a03-9e4517b1897e", json=query) as r:
+                    res = await r.json()
+                    mails = res['data']['session']['mails']
+            elif data['type'] == "1sec":
+                url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={data['user']}&domain={data['domain']}"
+                async with s.get(url) as r:
+                    items = await r.json()
+                    if items:
+                        url2 = f"https://www.1secmail.com/api/v1/?action=readMessage&login={data['user']}&domain={data['domain']}&id={items[0]['id']}"
+                        async with s.get(url2) as r2:
+                            m2 = await r2.json()
+                            mails.append({"fromAddr": m2['from'], "subject": m2['subject'], "text": m2['textBody']})
+        except: pass
+
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=data['url']))
 
-    if res and res.get('data') and res['data']['session']['mails']:
-        mail = res['data']['session']['mails'][-1] # Show the latest mail
-        
-        # Format the received message nicely
-        mail_text = (
-            f"📩 **NEW MESSAGE RECEIVED!**\n\n"
-            f"👤 **From:** `{mail['fromAddr']}`\n"
-            f"📝 **Subject:** {mail['subject']}\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"{mail['text'][:3000]}\n\n"
-            f"━━━━━━━━━━━━━━━"
-        )
-        await m.answer(mail_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    if not mails:
+        await m.answer(f"📧 `{data['email']}`\n\n**Inbox is empty**\n_Waiting for incoming codes..._", reply_markup=builder.as_markup(), parse_mode="Markdown")
     else:
-        await m.answer(
-            f"Current email address:\n`{data['email']}`\n\n"
-            f"**Your inbox is empty**\n"
-            f"Waiting for incoming emails...",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+        mail = mails[-1]
+        await m.answer(f"📩 **New Message!**\n\n👤 **From:** `{mail['fromAddr']}`\n📝 **Subject:** {mail['subject']}\n\n{mail['text'][:3000]}", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 async def main():
     Thread(target=run_web).start()
