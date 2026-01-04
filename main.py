@@ -1,18 +1,15 @@
-import asyncio
-import random
-import string
-import aiohttp
-import os
+import asyncio, random, string, aiohttp, os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.types import WebAppInfo
 from flask import Flask
 from threading import Thread
 
 # --- WEB SERVER FOR RENDER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is live!"
+def home(): return "Official Bot Live"
 
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
@@ -21,20 +18,14 @@ def run_web():
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-# Multi-user storage to keep things fast
 USER_DATA = {} 
 
-# List of domains that are very fast
-DOMAINS = ["1secmail.com", "1secmail.org", "1secmail.net", "kzbat.com", "vjuum.com", "vps93.com"]
-
-# --- API HELPER ---
-async def call_api(url):
+async def call_api(url, method="GET", data=None, token=None):
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token: headers["Authorization"] = f"Bearer {token}"
     async with aiohttp.ClientSession() as session:
         try:
-            # Using a real User-Agent to prevent "Forbidden" errors
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-            async with session.get(url, headers=headers, timeout=10) as r:
+            async with session.request(method, f"https://api.mail.tm{url}", json=data, headers=headers, timeout=15) as r:
                 return await r.json()
         except: return None
 
@@ -45,39 +36,56 @@ def main_menu():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-# --- COMMANDS ---
 @dp.message(Command("start"))
 async def start(m: types.Message):
     await m.answer(
         "👋 **Welcome to Temp Mail Official**\n\n"
-        "I provide high-speed disposable emails with an official browser interface. Use the menu below.",
+        "I provide high-speed disposable emails. My domains are rarely blocked, so you will receive your OTPs instantly.",
         reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
 @dp.message(F.text == "➕ Generate New / Delete")
 async def generate(m: types.Message):
-    # This part is instant and never "Busy"
+    status = await m.answer("🚀 **Generating official inbox...**")
+    
+    # 1. Get Domain
+    doms = await call_api("/domains")
+    if not doms or 'hydra:member' not in doms:
+        await status.edit_text("❌ Server busy. Please try again.")
+        return
+    
+    domain = doms['hydra:member'][0]['domain']
     user = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-    domain = random.choice(DOMAINS)
-    email = f"{user}@{domain}"
+    email, pwd = f"{user}@{domain}", "pass12345"
     
-    # Store user data
-    USER_DATA[m.from_user.id] = {"email": email, "user": user, "domain": domain}
+    # 2. Create Account
+    await call_api("/accounts", "POST", {"address": email, "password": pwd})
     
-    # The "Secret" link that bypasses Forbidden errors and opens the mailbox directly
-    mailbox_url = f"https://www.1secmail.com/mailbox/?login={user}&domain={domain}"
+    # 3. Get Token
+    tk = await call_api("/token", "POST", {"address": email, "password": pwd})
     
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=mailbox_url))
-    
-    await m.answer(
-        f"Your old email address has been successfully deleted\n\n"
-        f"New temporary email address generated:\n\n"
-        f"📧 **{email}**",
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
-    )
+    if tk and 'token' in tk:
+        USER_DATA[m.from_user.id] = {"email": email, "token": tk['token']}
+        
+        builder = InlineKeyboardBuilder()
+        # --- THE PRO FIX: WEB APP ---
+        # This opens the inbox smoothly INSIDE Telegram
+        builder.row(types.InlineKeyboardButton(
+            text="📥 Open Inbox (Smooth)", 
+            web_app=WebAppInfo(url="https://mail.tm/en/")
+        ))
+        
+        await status.delete()
+        await m.answer(
+            f"Your old email address has been successfully deleted\n\n"
+            f"New temporary email address generated:\n\n"
+            f"📧 **{email}**",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+    else:
+        await status.edit_text("❌ Server rejected request. Please try again.")
 
 @dp.message(F.text == "🔄 Refresh")
 async def refresh(m: types.Message):
@@ -87,16 +95,14 @@ async def refresh(m: types.Message):
         return
 
     data = USER_DATA[user_id]
-    mailbox_url = f"https://www.1secmail.com/mailbox/?login={data['user']}&domain={data['domain']}"
     
-    # Check for messages via API so the user can see them in Telegram too
-    api_url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={data['user']}&domain={data['domain']}"
-    messages = await call_api(api_url)
+    # Check for messages
+    messages = await call_api("/messages", token=data['token'])
     
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="Open in Browser ➡", url=mailbox_url))
+    builder.row(types.InlineKeyboardButton(text="📥 Open Full Inbox", web_app=WebAppInfo(url="https://mail.tm/en/")))
 
-    if not messages:
+    if not messages or not messages.get('hydra:member'):
         await m.answer(
             f"Current email address:\n**{data['email']}**\n\n"
             f"**Your inbox is empty**\n"
@@ -105,13 +111,18 @@ async def refresh(m: types.Message):
             parse_mode="Markdown"
         )
     else:
-        # If there's a new mail, show the sender and subject
-        msg = messages[0]
+        # Get the latest message
+        msg_item = messages['hydra:member'][0]
+        # Get full content
+        detail = await call_api(f"/messages/{msg_item['id']}", token=data['token'])
+        
+        body = detail.get('text', 'No text content')
         await m.answer(
-            f"📩 **New Message Found!**\n\n"
-            f"👤 **From:** `{msg['from']}`\n"
-            f"📝 **Subject:** {msg['subject']}\n\n"
-            f"💡 _Click 'Open in Browser' to read the full content and see attachments._",
+            f"📩 **New Message Received!**\n\n"
+            f"👤 **From:** `{msg_item['from']['address']}`\n"
+            f"📝 **Subject:** {msg_item['subject']}\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"{body[:3000]}",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
